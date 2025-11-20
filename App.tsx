@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Plus, Trash2, Search, Wallet, AlertCircle, PieChart as PieChartIcon, Github, Activity, ArrowUpRight } from 'lucide-react';
+import { Plus, Trash2, Search, Wallet, AlertCircle, PieChart as PieChartIcon, Github, Activity, ArrowUpRight, TrendingUp, Percent, DollarSign, Info } from 'lucide-react';
 import { PortfolioItem, AggregatedHolding, AggregatedSector } from './types';
 import { fetchEtfProfile } from './services/alphaVantage';
 import { Button } from './components/Button';
@@ -11,15 +11,35 @@ function App() {
   const [newTicker, setNewTicker] = useState('');
   const [newEquity, setNewEquity] = useState<string>('10000');
   
-  // Derived State: Calculations
-  const totalEquity = useMemo(() => {
-    // Only sum equity for items that successfully loaded data
-    return portfolio.reduce((sum, item) => {
-       if (item.data && !item.error) {
-         return sum + item.equity;
-       }
-       return sum;
-    }, 0);
+  // Derived State: Portfolio Statistics
+  const stats = useMemo(() => {
+    let totalEquity = 0;
+    let weightedExpense = 0; // This accumulates (Ratio * Equity) = Total Dollar Cost
+    let weightedYield = 0;   // This accumulates (Yield * Equity) = Total Dollar Dividend
+    let validItemsCount = 0;
+
+    portfolio.forEach(item => {
+      if (item.data && !item.error) {
+        totalEquity += item.equity;
+        validItemsCount++;
+
+        // Parse strings like "0.002" to numbers
+        const expenseRatio = parseFloat(item.data.net_expense_ratio) || 0;
+        const divYield = parseFloat(item.data.dividend_yield) || 0;
+
+        weightedExpense += expenseRatio * item.equity;
+        weightedYield += divYield * item.equity;
+      }
+    });
+
+    return {
+      totalEquity,
+      avgExpenseRatio: totalEquity > 0 ? (weightedExpense / totalEquity) : 0,
+      avgDividendYield: totalEquity > 0 ? (weightedYield / totalEquity) : 0,
+      totalAnnualExpense: weightedExpense,
+      totalAnnualDividend: weightedYield,
+      hasData: validItemsCount > 0
+    };
   }, [portfolio]);
 
   const aggregatedData = useMemo(() => {
@@ -72,7 +92,7 @@ function App() {
         name: data.name,
         assetClass: data.assetClass,
         totalValue: data.value,
-        percentageOfPortfolio: totalEquity > 0 ? (data.value / totalEquity) * 100 : 0
+        percentageOfPortfolio: stats.totalEquity > 0 ? (data.value / stats.totalEquity) * 100 : 0
       }))
       .sort((a, b) => b.totalValue - a.totalValue);
 
@@ -80,12 +100,12 @@ function App() {
       .map(([name, value]) => ({
         name,
         value,
-        percentage: totalEquity > 0 ? (value / totalEquity) * 100 : 0
+        percentage: stats.totalEquity > 0 ? (value / stats.totalEquity) * 100 : 0
       }))
       .sort((a, b) => b.value - a.value);
 
     return { holdings, sectors };
-  }, [portfolio, totalEquity]);
+  }, [portfolio, stats.totalEquity]);
 
   // Handlers
   const handleSaveKey = (key: string) => {
@@ -131,8 +151,6 @@ function App() {
     setPortfolio(prev => prev.filter(item => item.id !== id));
   };
 
-  const hasData = aggregatedData.holdings.length > 0;
-
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col relative overflow-x-hidden selection:bg-blue-500/30">
       {/* Ambient Background Effect */}
@@ -159,7 +177,7 @@ function App() {
             </div>
             
             <a 
-              href="https://github.com/bobsa514" 
+              href="https://github.com/bobsa514/ETFTrueHoldings" 
               target="_blank" 
               rel="noopener noreferrer" 
               className="text-slate-400 hover:text-white transition-all hover:bg-slate-800/50 p-2 rounded-full border border-transparent hover:border-slate-700"
@@ -252,7 +270,7 @@ function App() {
                 <div className="flex-grow flex flex-col min-h-0 border-t border-slate-800/60 bg-slate-950/30">
                   <div className="px-6 py-3 bg-slate-950/40 text-xs font-bold text-slate-500 uppercase flex justify-between items-center border-b border-slate-800/30">
                       <span>Holdings ({portfolio.length}/50)</span>
-                      <span className="text-blue-400 font-mono">${totalEquity.toLocaleString()}</span>
+                      <span className="text-blue-400 font-mono">${stats.totalEquity.toLocaleString()}</span>
                   </div>
                   <div className="overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent flex-grow">
                       {portfolio.length === 0 && (
@@ -285,7 +303,19 @@ function App() {
                                             {item.data.name}
                                             </div>
                                         )}
-                                        <div className="text-sm text-slate-400 font-mono">${item.equity.toLocaleString()}</div>
+                                        <div className="flex items-baseline gap-2 mb-1">
+                                           <span className="text-sm text-slate-300 font-mono">${item.equity.toLocaleString()}</span>
+                                        </div>
+                                        {item.data && (
+                                            <div className="flex items-center gap-3 text-[10px] text-slate-500 uppercase tracking-wide">
+                                                <span className="bg-slate-800/50 px-1.5 py-0.5 rounded" title="Expense Ratio">
+                                                   Exp: {(parseFloat(item.data.net_expense_ratio) * 100).toFixed(2)}%
+                                                </span>
+                                                <span className="bg-slate-800/50 px-1.5 py-0.5 rounded" title="Dividend Yield">
+                                                   Div: {(parseFloat(item.data.dividend_yield) * 100).toFixed(2)}%
+                                                </span>
+                                            </div>
+                                        )}
                                       </>
                                   )}
                               </div>
@@ -305,12 +335,81 @@ function App() {
 
             {/* Right Column: Visualization */}
             <div className="xl:col-span-2 min-h-[600px]">
-              {hasData ? (
-                  <AnalysisCharts 
-                      holdings={aggregatedData.holdings} 
-                      sectors={aggregatedData.sectors} 
-                      totalEquity={totalEquity} 
-                  />
+              {stats.hasData ? (
+                  <div className="space-y-6">
+                      {/* Stats Cards */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                          
+                          {/* Total Assets */}
+                          <div className="bg-slate-900/60 backdrop-blur-md p-4 rounded-xl border border-slate-800/60 shadow-lg flex items-center">
+                              <div className="p-3 bg-blue-500/10 rounded-lg mr-4">
+                                  <DollarSign className="w-6 h-6 text-blue-400" />
+                              </div>
+                              <div>
+                                  <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">Total Assets</div>
+                                  <div className="text-xl font-bold text-white font-mono">${stats.totalEquity.toLocaleString()}</div>
+                              </div>
+                          </div>
+
+                          {/* Expense Ratio */}
+                          <div className="bg-slate-900/60 backdrop-blur-md p-4 rounded-xl border border-slate-800/60 shadow-lg flex items-center relative group">
+                              <div className="p-3 bg-amber-500/10 rounded-lg mr-4">
+                                  <Percent className="w-6 h-6 text-amber-400" />
+                              </div>
+                              <div className="flex-1">
+                                  <div className="flex items-center gap-1 text-xs text-slate-500 uppercase font-bold tracking-wider cursor-help">
+                                      Avg Expense Ratio
+                                      <div className="relative group/tooltip">
+                                        <Info className="w-3.5 h-3.5 text-slate-600 hover:text-slate-400 transition-colors" />
+                                        <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-slate-200 text-[10px] normal-case rounded-lg border border-slate-700 shadow-xl whitespace-nowrap opacity-0 group-hover/tooltip:opacity-100 pointer-events-none transition-opacity z-50">
+                                            Estimated annual fees paid to ETF managers
+                                        </div>
+                                      </div>
+                                  </div>
+                                  <div className="flex flex-col">
+                                    <span className="text-lg font-bold text-slate-200 font-mono">
+                                        -${stats.totalAnnualExpense.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} <span className="text-sm text-slate-500 font-sans font-normal">/ yr</span>
+                                    </span>
+                                    <span className="text-xs text-slate-500 font-mono">
+                                        {(stats.avgExpenseRatio * 100).toFixed(2)}% avg
+                                    </span>
+                                  </div>
+                              </div>
+                          </div>
+
+                          {/* Dividend Yield */}
+                          <div className="bg-slate-900/60 backdrop-blur-md p-4 rounded-xl border border-slate-800/60 shadow-lg flex items-center">
+                              <div className="p-3 bg-emerald-500/10 rounded-lg mr-4">
+                                  <TrendingUp className="w-6 h-6 text-emerald-400" />
+                              </div>
+                              <div className="flex-1">
+                                  <div className="flex items-center gap-1 text-xs text-slate-500 uppercase font-bold tracking-wider cursor-help">
+                                      Avg Div Yield
+                                      <div className="relative group/tooltip">
+                                        <Info className="w-3.5 h-3.5 text-slate-600 hover:text-slate-400 transition-colors" />
+                                        <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-slate-200 text-[10px] normal-case rounded-lg border border-slate-700 shadow-xl whitespace-nowrap opacity-0 group-hover/tooltip:opacity-100 pointer-events-none transition-opacity z-50">
+                                            Estimated annual dividend income
+                                        </div>
+                                      </div>
+                                  </div>
+                                  <div className="flex flex-col">
+                                    <span className="text-lg font-bold text-slate-200 font-mono">
+                                        +${stats.totalAnnualDividend.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} <span className="text-sm text-slate-500 font-sans font-normal">/ yr</span>
+                                    </span>
+                                    <span className="text-xs text-slate-500 font-mono">
+                                        {(stats.avgDividendYield * 100).toFixed(2)}% avg
+                                    </span>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+
+                      <AnalysisCharts 
+                          holdings={aggregatedData.holdings} 
+                          sectors={aggregatedData.sectors} 
+                          totalEquity={stats.totalEquity} 
+                      />
+                  </div>
               ) : (
                   <div className="h-full bg-slate-900/40 backdrop-blur-md rounded-2xl border border-slate-800 border-dashed flex flex-col items-center justify-center text-slate-500 p-8 animate-in fade-in duration-700">
                       <div className="relative">

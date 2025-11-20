@@ -17,6 +17,8 @@ export interface EtfProfileData {
   name?: string; // Added to store full ETF name
   net_assets: string;
   portfolio_turnover: string;
+  net_expense_ratio: string; // e.g., "0.002"
+  dividend_yield: string;    // e.g., "0.0043"
   holdings: AVHolding[];
   sectors: AVSector[];
 }
@@ -45,10 +47,12 @@ export interface AggregatedHolding {
   assetClass: string; // Added for display
   totalValue: number;
   percentageOfPortfolio: number;
+  [key: string]: any;
 }
 
 export interface AggregatedSector {
   name: string;
   value: number;
   percentage: number;
+  [key: string]: any;
 }

@@ -1,28 +1,31 @@
 import { EtfProfileData } from '../types';
 
 const BASE_URL = 'https://www.alphavantage.co/query';
-const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
-
-// Helper to delay execution to mitigate rate limiting slightly
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const CACHE_DURATION = 24 * 60 * 60 * 1000;
+const ERROR_CACHE_DURATION = 60 * 60 * 1000;
 
 interface CacheEntry {
-  data: EtfProfileData;
+  data: EtfProfileData | null;
+  isError: boolean;
+  errorMessage?: string;
   timestamp: number;
 }
 
-const getCache = (ticker: string): EtfProfileData | null => {
-  const key = `av_etf_v4_${ticker.toUpperCase()}`;
+const getCache = (ticker: string): { data: EtfProfileData | null; isError: boolean; errorMessage?: string } | null => {
+  const key = `av_etf_v5_${ticker.toUpperCase()}`;
   const stored = localStorage.getItem(key);
   if (!stored) return null;
 
   try {
     const entry: CacheEntry = JSON.parse(stored);
     const now = Date.now();
-    if (now - entry.timestamp < CACHE_DURATION) {
-      return entry.data;
+    const cacheAge = now - entry.timestamp;
+    const validDuration = entry.isError ? ERROR_CACHE_DURATION : CACHE_DURATION;
+    
+    if (cacheAge < validDuration) {
+      return { data: entry.data, isError: entry.isError, errorMessage: entry.errorMessage };
     } else {
-      localStorage.removeItem(key); // Expired
+      localStorage.removeItem(key);
     }
   } catch (e) {
     localStorage.removeItem(key);
@@ -30,79 +33,88 @@ const getCache = (ticker: string): EtfProfileData | null => {
   return null;
 };
 
-const setCache = (ticker: string, data: EtfProfileData) => {
-  const key = `av_etf_v4_${ticker.toUpperCase()}`;
+const setCache = (ticker: string, data: EtfProfileData | null, isError: boolean, errorMessage?: string) => {
+  const key = `av_etf_v5_${ticker.toUpperCase()}`;
   const entry: CacheEntry = {
     data,
+    isError,
+    errorMessage,
     timestamp: Date.now()
   };
   try {
     localStorage.setItem(key, JSON.stringify(entry));
   } catch (e) {
-    // Ignore quota exceeded
+    console.warn('Cache quota exceeded');
   }
 };
 
 export const fetchEtfProfile = async (ticker: string, apiKey: string): Promise<EtfProfileData> => {
-  // 1. Check Cache
-  const cachedData = getCache(ticker);
-  if (cachedData) {
-    return cachedData;
+  const cached = getCache(ticker);
+  if (cached) {
+    if (cached.isError) {
+      throw new Error(cached.errorMessage || 'Cached error');
+    }
+    return cached.data!;
   }
 
-  // 2. Fetch Profile
   const profileUrl = `${BASE_URL}?function=ETF_PROFILE&symbol=${ticker}&apikey=${apiKey}`;
   const response = await fetch(profileUrl);
   
   if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`);
+    const errorMsg = `HTTP error! status: ${response.status}`;
+    setCache(ticker, null, true, errorMsg);
+    throw new Error(errorMsg);
   }
 
   const data = await response.json();
 
-  // 3. Handle API Specific Errors
   if (data['Error Message']) {
-    throw new Error("Ticker not found or invalid");
+    const errorMsg = 'Ticker not found or invalid';
+    setCache(ticker, null, true, errorMsg);
+    throw new Error(errorMsg);
   }
-  if (data['Note']) {
-    throw new Error("API Limit Reached (25/day)"); // Standard free key limit
-  }
-  if (data['Information']) {
-    throw new Error("Daily Limit Exceeded");
+  if (data['Note'] || data['Information']) {
+    const errorMsg = 'API Limit Reached (25/day)';
+    setCache(ticker, null, true, errorMsg);
+    throw new Error(errorMsg);
   }
   
-  if (!data.holdings || !Array.isArray(data.holdings)) {
-    // Sometimes empty holdings come back for obscure ETFs
-    throw new Error(`No holding data available`);
-  }
-
-  // 4. Attempt to fetch ETF Name (Best Effort)
-  let etfName = ticker;
-  try {
-    // Only try if we have enough remaining quota or randomness to avoid lockup
-    // We skip this if we suspect we are tight on limits, but tough to know.
-    await delay(250); 
-    const searchUrl = `${BASE_URL}?function=SYMBOL_SEARCH&keywords=${ticker}&apikey=${apiKey}`;
-    const searchRes = await fetch(searchUrl);
-    const searchData = await searchRes.json();
-    
-    if (searchData.bestMatches && Array.isArray(searchData.bestMatches)) {
-      const match = searchData.bestMatches.find((m: any) => m['1. symbol'] === ticker);
-      if (match) {
-        etfName = match['2. name'];
-      }
-    }
-  } catch (e) {
-    console.warn("Failed to fetch ETF name", e);
+  if (!data.holdings || !Array.isArray(data.holdings) || data.holdings.length === 0) {
+    const errorMsg = 'No holding data available';
+    setCache(ticker, null, true, errorMsg);
+    throw new Error(errorMsg);
   }
 
   const finalData: EtfProfileData = {
-    ...data,
-    name: etfName
+    symbol: ticker.toUpperCase(),
+    name: data.name || data.symbol || ticker,
+    net_assets: data.net_assets || '0',
+    portfolio_turnover: data.portfolio_turnover || '0',
+    net_expense_ratio: data.net_expense_ratio || '0',
+    dividend_yield: data.dividend_yield || '0',
+    holdings: data.holdings,
+    sectors: data.sectors || []
   };
 
-  // 5. Save to Cache
-  setCache(ticker, finalData);
-
+  setCache(ticker, finalData, false);
   return finalData;
+};
+
+export const clearCache = (ticker?: string) => {
+  if (ticker) {
+    localStorage.removeItem(`av_etf_v5_${ticker.toUpperCase()}`);
+  } else {
+    Object.keys(localStorage)
+      .filter(k => k.startsWith('av_etf_v5_'))
+      .forEach(k => localStorage.removeItem(k));
+  }
+};
+
+export const getApiCallsUsed = (): number => {
+  return parseInt(localStorage.getItem('av_api_calls') || '0');
+};
+
+export const incrementApiCalls = () => {
+  const current = getApiCallsUsed();
+  localStorage.setItem('av_api_calls', String(current + 1));
 };
